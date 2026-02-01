@@ -177,7 +177,7 @@ public:
 
     void analyzeWiFiFrame(const WiFiFrameEvent& frame) {
         uint16_t matchFlags = 0;
-        uint8_t weights[8];
+        uint8_t weights[MAX_DETECTOR_WEIGHTS];
         memset(weights, 0, sizeof(weights));
         int16_t totalWeight = 0;
 
@@ -230,7 +230,7 @@ public:
 
     void analyzeBluetoothDevice(const BluetoothDeviceEvent& device) {
         uint16_t matchFlags = 0;
-        uint8_t weights[8];
+        uint8_t weights[MAX_DETECTOR_WEIGHTS];
         memset(weights, 0, sizeof(weights));
         int16_t totalWeight = 0;
 

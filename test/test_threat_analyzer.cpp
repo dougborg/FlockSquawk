@@ -442,6 +442,8 @@ TEST_CASE("ThreatAnalyzer: Axis Communications OUI produces INFO alert") {
     CHECK((lastThreat.matchFlags & DET_SURVEILLANCE_OUI) != 0);
     CHECK(strcmp(lastThreat.category, "surveillance_camera") == 0);
     CHECK(lastThreat.shouldAlert == false);
+    // Verify weight stored at correct bit position (was an OOB bug when array was [8])
+    CHECK(lastThreat.detectorWeights[detectorBitPosition(DET_SURVEILLANCE_OUI)] == 30);
 }
 
 TEST_CASE("ThreatAnalyzer: BLE Hanwha Vision OUI produces INFO alert") {
