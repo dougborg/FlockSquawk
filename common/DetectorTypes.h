@@ -22,6 +22,7 @@ enum DetectorFlag : uint16_t {
     DET_RAVEN_CUSTOM_UUID = (1 << 4),
     DET_RAVEN_STD_UUID    = (1 << 5),
     DET_RSSI_MODIFIER     = (1 << 6),
+    DET_FLOCK_OUI         = (1 << 7),
 };
 
 // Forward declarations (defined in EventBus.h)

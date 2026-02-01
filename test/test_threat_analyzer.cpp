@@ -378,3 +378,50 @@ TEST_CASE("ThreatAnalyzer: visible SSID + known OUI does not get hidden bonus") 
     CHECK(lastThreat.certainty == 20);
     CHECK(lastThreat.shouldAlert == false);
 }
+
+// ============================================================
+// Flock Safety OUI (B4:1E:52)
+// ============================================================
+
+TEST_CASE("ThreatAnalyzer: WiFi B4:1E:52 Flock Safety OUI detected") {
+    ThreatAnalyzer analyzer;
+    analyzer.initialize();
+    resetCapture();
+    mock_millis_value = 5000;
+
+    auto frame = makeWiFiFrame("SomeSSID", -60);
+    frame.mac[0] = 0xB4; frame.mac[1] = 0x1E; frame.mac[2] = 0x52;
+    frame.mac[3] = 0xAA; frame.mac[4] = 0xBB; frame.mac[5] = 0xCC;
+    analyzer.analyzeWiFiFrame(frame);
+    REQUIRE(threatCount == 1);
+    CHECK((lastThreat.matchFlags & DET_FLOCK_OUI) != 0);
+    CHECK(lastThreat.shouldAlert == true);
+}
+
+TEST_CASE("ThreatAnalyzer: BLE B4:1E:52 Flock Safety OUI detected") {
+    ThreatAnalyzer analyzer;
+    analyzer.initialize();
+    resetCapture();
+    mock_millis_value = 5000;
+
+    auto device = makeBLEDevice("", -60);
+    device.mac[0] = 0xB4; device.mac[1] = 0x1E; device.mac[2] = 0x52;
+    device.mac[3] = 0xDD; device.mac[4] = 0xEE; device.mac[5] = 0xFF;
+    analyzer.analyzeBluetoothDevice(device);
+    REQUIRE(threatCount == 1);
+    CHECK((lastThreat.matchFlags & DET_FLOCK_OUI) != 0);
+    CHECK(lastThreat.shouldAlert == true);
+}
+
+TEST_CASE("ThreatAnalyzer: test_flck keyword triggers detection") {
+    ThreatAnalyzer analyzer;
+    analyzer.initialize();
+    resetCapture();
+    mock_millis_value = 5000;
+
+    auto frame = makeWiFiFrame("test_flck", -60);
+    frame.mac[3] = 0xF1; frame.mac[4] = 0xF2; frame.mac[5] = 0xF3;
+    analyzer.analyzeWiFiFrame(frame);
+    REQUIRE(threatCount == 1);
+    CHECK((lastThreat.matchFlags & DET_SSID_KEYWORD) != 0);
+}

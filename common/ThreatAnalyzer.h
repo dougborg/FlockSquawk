@@ -15,6 +15,7 @@ static const WiFiDetectorEntry wifiDetectors[] = {
     { detectSsidFormat,  DET_SSID_FORMAT  },
     { detectSsidKeyword, DET_SSID_KEYWORD },
     { detectWifiMacOui,  DET_MAC_OUI      },
+    { detectFlockOui,    DET_FLOCK_OUI    },
 };
 static const uint8_t WIFI_DETECTOR_COUNT =
     sizeof(wifiDetectors) / sizeof(wifiDetectors[0]);
@@ -24,6 +25,7 @@ static const BLEDetectorEntry bleDetectors[] = {
     { detectRavenCustomUuid, DET_RAVEN_CUSTOM_UUID },
     { detectRavenStdUuid,    DET_RAVEN_STD_UUID    },
     { detectBleMacOui,       DET_MAC_OUI           },
+    { detectBleFlockOui,     DET_FLOCK_OUI         },
 };
 static const uint8_t BLE_DETECTOR_COUNT =
     sizeof(bleDetectors) / sizeof(bleDetectors[0]);
