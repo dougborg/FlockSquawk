@@ -120,6 +120,29 @@ private:
 };
 
 // ============================================================
+// Post-detector scoring rules
+// ============================================================
+//
+// Each rule checks which detector flags fired (and optionally frame
+// context like hidden SSID) and applies a point modifier.  This
+// replaces hardcoded subsumption logic and adds compound bonuses.
+
+struct WiFiScoringRule {
+    uint16_t requiredFlags;      // detector flags that must all be set
+    bool     requiresHiddenSsid; // true = rule only applies when ssid[0]=='\0'
+    int8_t   modifier;           // points to add (positive) or subtract (negative)
+};
+
+static const WiFiScoringRule wifiScoringRules[] = {
+    // Hidden SSID + known OUI: device hiding its identity is suspicious
+    { DET_MAC_OUI, true, +50 },
+    // SSID format already covers keyword -- remove double-count
+    { DET_SSID_FORMAT | DET_SSID_KEYWORD, false, -45 },
+};
+static const uint8_t WIFI_SCORING_RULE_COUNT =
+    sizeof(wifiScoringRules) / sizeof(wifiScoringRules[0]);
+
+// ============================================================
 // Bit position helper
 // ============================================================
 
@@ -157,11 +180,13 @@ public:
             }
         }
 
-        // Subsumption: SSID format supersedes SSID keyword
-        if ((matchFlags & DET_SSID_FORMAT) && (matchFlags & DET_SSID_KEYWORD)) {
-            totalWeight -= weights[detectorBitPosition(DET_SSID_KEYWORD)];
-            matchFlags &= ~DET_SSID_KEYWORD;
-            weights[detectorBitPosition(DET_SSID_KEYWORD)] = 0;
+        // Apply post-detector scoring rules
+        bool hiddenSsid = (frame.ssid[0] == '\0');
+        for (uint8_t r = 0; r < WIFI_SCORING_RULE_COUNT; r++) {
+            const WiFiScoringRule& rule = wifiScoringRules[r];
+            if ((matchFlags & rule.requiredFlags) != rule.requiredFlags) continue;
+            if (rule.requiresHiddenSsid && !hiddenSsid) continue;
+            totalWeight += rule.modifier;
         }
 
         if (matchFlags == DET_NONE) return;

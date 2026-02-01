@@ -79,9 +79,9 @@ TEST_CASE("ThreatAnalyzer: WiFi no-match produces no threat") {
     CHECK(threatCount == 0);
 }
 
-TEST_CASE("ThreatAnalyzer: WiFi subsumption removes keyword weight") {
+TEST_CASE("ThreatAnalyzer: WiFi scoring rule removes keyword double-count") {
     // "Flock-a1b2c3" matches both SSID_FORMAT (75) and SSID_KEYWORD (45).
-    // Subsumption should remove the keyword weight.
+    // The scoring rule subtracts 45 when both fire together.
     ThreatAnalyzer analyzer;
     analyzer.initialize();
     resetCapture();
@@ -90,10 +90,8 @@ TEST_CASE("ThreatAnalyzer: WiFi subsumption removes keyword weight") {
     // RSSI -60 → rssiModifier = 0
     analyzer.analyzeWiFiFrame(makeWiFiFrame("Flock-a1b2c3", -60));
     REQUIRE(threatCount == 1);
-    // Should be 75 (format) + 0 (rssi) = 75, NOT 75+45=120
+    // Should be 75 (format) + 45 (keyword) - 45 (rule) + 0 (rssi) = 75
     CHECK(lastThreat.certainty == 75);
-    // SSID_KEYWORD flag should be cleared
-    CHECK((lastThreat.matchFlags & DET_SSID_KEYWORD) == 0);
     CHECK((lastThreat.matchFlags & DET_SSID_FORMAT) != 0);
 }
 
@@ -132,17 +130,16 @@ TEST_CASE("ThreatAnalyzer: WiFi certainty clamped to 100") {
 }
 
 TEST_CASE("ThreatAnalyzer: WiFi certainty clamped to 0 minimum") {
-    // Keyword alone (45) at very weak signal (-90 → -10) = 35
-    // That's still positive. Use OUI alone (20) at -90 → 20-10 = 10.
+    // OUI alone (20) at RSSI -90 → 20 + (-10) = 10.
     // Can't easily get negative with existing detectors, but verify >= 0.
+    // Use a visible SSID that doesn't match any pattern to avoid hidden bonus.
     ThreatAnalyzer analyzer;
     analyzer.initialize();
     resetCapture();
     mock_millis_value = 5000;
 
     // MAC OUI match only (weight 20) at RSSI -90 → 20 + (-10) = 10
-    auto frame = makeWiFiFrame("", -90);
-    frame.ssid[0] = '\0';  // ensure no SSID match
+    auto frame = makeWiFiFrame("SomeRandomNetwork", -90);
     frame.mac[0] = 0x58; frame.mac[1] = 0x8E; frame.mac[2] = 0x81;
     frame.mac[3] = 0xBB; frame.mac[4] = 0xBB; frame.mac[5] = 0xBB;
     analyzer.analyzeWiFiFrame(frame);
@@ -287,4 +284,97 @@ TEST_CASE("ThreatAnalyzer: tick returns false before heartbeat interval") {
 
     // Tick before interval elapses
     CHECK_FALSE(analyzer.tick(HEARTBEAT_INTERVAL_MS - 1));
+}
+
+// ============================================================
+// Hidden SSID + OUI scoring rule
+// ============================================================
+
+TEST_CASE("ThreatAnalyzer: hidden SSID + known OUI triggers alert at close range") {
+    ThreatAnalyzer analyzer;
+    analyzer.initialize();
+    resetCapture();
+    mock_millis_value = 5000;
+
+    // Hidden SSID (empty string) + known OUI at RSSI -45 (close)
+    // OUI=20, hidden-SSID bonus=+50, RSSI mod=+10 → 80
+    auto frame = makeWiFiFrame("", -45);
+    frame.ssid[0] = '\0';
+    frame.mac[0] = 0x58; frame.mac[1] = 0x8E; frame.mac[2] = 0x81;
+    frame.mac[3] = 0xC0; frame.mac[4] = 0xC0; frame.mac[5] = 0xC0;
+    analyzer.analyzeWiFiFrame(frame);
+    REQUIRE(threatCount == 1);
+    CHECK(lastThreat.certainty == 80);
+    CHECK(lastThreat.shouldAlert == true);
+}
+
+TEST_CASE("ThreatAnalyzer: hidden SSID + known OUI triggers alert at medium range") {
+    ThreatAnalyzer analyzer;
+    analyzer.initialize();
+    resetCapture();
+    mock_millis_value = 5000;
+
+    // Hidden SSID + known OUI at RSSI -60 (medium)
+    // OUI=20, hidden-SSID bonus=+50, RSSI mod=0 → 70
+    auto frame = makeWiFiFrame("", -60);
+    frame.ssid[0] = '\0';
+    frame.mac[0] = 0x58; frame.mac[1] = 0x8E; frame.mac[2] = 0x81;
+    frame.mac[3] = 0xC1; frame.mac[4] = 0xC1; frame.mac[5] = 0xC1;
+    analyzer.analyzeWiFiFrame(frame);
+    REQUIRE(threatCount == 1);
+    CHECK(lastThreat.certainty == 70);
+    CHECK(lastThreat.shouldAlert == true);
+}
+
+TEST_CASE("ThreatAnalyzer: hidden SSID + known OUI at threshold boundary") {
+    ThreatAnalyzer analyzer;
+    analyzer.initialize();
+    resetCapture();
+    mock_millis_value = 5000;
+
+    // Hidden SSID + known OUI at RSSI -75 (weaker)
+    // OUI=20, hidden-SSID bonus=+50, RSSI mod=-5 → 65
+    auto frame = makeWiFiFrame("", -75);
+    frame.ssid[0] = '\0';
+    frame.mac[0] = 0x58; frame.mac[1] = 0x8E; frame.mac[2] = 0x81;
+    frame.mac[3] = 0xC2; frame.mac[4] = 0xC2; frame.mac[5] = 0xC2;
+    analyzer.analyzeWiFiFrame(frame);
+    REQUIRE(threatCount == 1);
+    CHECK(lastThreat.certainty == 65);
+    CHECK(lastThreat.shouldAlert == true);
+}
+
+TEST_CASE("ThreatAnalyzer: hidden SSID + known OUI below threshold at long range") {
+    ThreatAnalyzer analyzer;
+    analyzer.initialize();
+    resetCapture();
+    mock_millis_value = 5000;
+
+    // Hidden SSID + known OUI at RSSI -90 (far)
+    // OUI=20, hidden-SSID bonus=+50, RSSI mod=-10 → 60
+    auto frame = makeWiFiFrame("", -90);
+    frame.ssid[0] = '\0';
+    frame.mac[0] = 0x58; frame.mac[1] = 0x8E; frame.mac[2] = 0x81;
+    frame.mac[3] = 0xC3; frame.mac[4] = 0xC3; frame.mac[5] = 0xC3;
+    analyzer.analyzeWiFiFrame(frame);
+    REQUIRE(threatCount == 1);
+    CHECK(lastThreat.certainty == 60);
+    CHECK(lastThreat.shouldAlert == false);
+}
+
+TEST_CASE("ThreatAnalyzer: visible SSID + known OUI does not get hidden bonus") {
+    ThreatAnalyzer analyzer;
+    analyzer.initialize();
+    resetCapture();
+    mock_millis_value = 5000;
+
+    // Non-hidden SSID with known OUI: only OUI weight applies (no bonus)
+    // OUI=20, RSSI -60 mod=0 → 20
+    auto frame = makeWiFiFrame("SomeNetwork", -60);
+    frame.mac[0] = 0x58; frame.mac[1] = 0x8E; frame.mac[2] = 0x81;
+    frame.mac[3] = 0xC4; frame.mac[4] = 0xC4; frame.mac[5] = 0xC4;
+    analyzer.analyzeWiFiFrame(frame);
+    REQUIRE(threatCount == 1);
+    CHECK(lastThreat.certainty == 20);
+    CHECK(lastThreat.shouldAlert == false);
 }
