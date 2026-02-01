@@ -31,6 +31,36 @@ static const uint8_t BLE_DETECTOR_COUNT =
     sizeof(bleDetectors) / sizeof(bleDetectors[0]);
 
 // ============================================================
+// Flag-based alert tier computation
+// ============================================================
+
+inline AlertLevel computeWiFiAlertLevel(uint16_t matchFlags, bool hiddenSsid) {
+    if (matchFlags & (DET_SSID_FORMAT | DET_FLOCK_OUI))
+        return ALERT_CONFIRMED;
+    if ((matchFlags & DET_SSID_KEYWORD) && (matchFlags & DET_MAC_OUI))
+        return ALERT_CONFIRMED;
+    if (matchFlags & DET_SSID_KEYWORD)
+        return ALERT_SUSPICIOUS;
+    if ((matchFlags & DET_MAC_OUI) && hiddenSsid)
+        return ALERT_SUSPICIOUS;
+    if (matchFlags & DET_SURVEILLANCE_OUI)
+        return ALERT_INFO;
+    return ALERT_NONE;
+}
+
+inline AlertLevel computeBLEAlertLevel(uint16_t matchFlags) {
+    if (matchFlags & (DET_BLE_NAME | DET_RAVEN_CUSTOM_UUID | DET_FLOCK_OUI))
+        return ALERT_CONFIRMED;
+    if (matchFlags & DET_MAC_OUI)
+        return ALERT_SUSPICIOUS;
+    if (matchFlags & DET_RAVEN_STD_UUID)
+        return ALERT_SUSPICIOUS;
+    if (matchFlags & DET_SURVEILLANCE_OUI)
+        return ALERT_INFO;
+    return ALERT_NONE;
+}
+
+// ============================================================
 // Device Presence Tracker
 // ============================================================
 
@@ -57,7 +87,7 @@ public:
     // Record a detection. Returns the state the device was in BEFORE
     // this update (EMPTY = first time seen).
     DeviceState recordDetection(const uint8_t* mac, uint32_t nowMs,
-                                uint8_t certainty) {
+                                AlertLevel level) {
         for (uint8_t i = 0; i < MAX_TRACKED_DEVICES; i++) {
             if (slots[i].state != DeviceState::EMPTY &&
                 slots[i].state != DeviceState::DEPARTED &&
@@ -65,26 +95,26 @@ public:
                 DeviceState prev = slots[i].state;
                 slots[i].lastSeenMs = nowMs;
                 slots[i].state = DeviceState::IN_RANGE;
-                if (certainty > slots[i].maxCertainty)
-                    slots[i].maxCertainty = certainty;
+                if (level > slots[i].maxAlertLevel)
+                    slots[i].maxAlertLevel = level;
                 return prev;
             }
         }
 
         uint8_t slot = findFreeSlot();
         memcpy(slots[slot].mac, mac, 6);
-        slots[slot].firstSeenMs  = nowMs;
-        slots[slot].lastSeenMs   = nowMs;
-        slots[slot].maxCertainty = certainty;
-        slots[slot].state        = DeviceState::NEW_DETECT;
+        slots[slot].firstSeenMs    = nowMs;
+        slots[slot].lastSeenMs     = nowMs;
+        slots[slot].maxAlertLevel  = level;
+        slots[slot].state          = DeviceState::NEW_DETECT;
         return DeviceState::EMPTY;
     }
 
-    // Returns true if any tracked device is IN_RANGE and above threshold.
+    // Returns true if any tracked device is IN_RANGE at SUSPICIOUS or above.
     bool hasHighConfidenceInRange() const {
         for (uint8_t i = 0; i < MAX_TRACKED_DEVICES; i++) {
             if (slots[i].state == DeviceState::IN_RANGE &&
-                slots[i].maxCertainty >= ALERT_THRESHOLD) {
+                slots[i].maxAlertLevel >= ALERT_SUSPICIOUS) {
                 return true;
             }
         }
@@ -120,29 +150,6 @@ private:
         return oldest;
     }
 };
-
-// ============================================================
-// Post-detector scoring rules
-// ============================================================
-//
-// Each rule checks which detector flags fired (and optionally frame
-// context like hidden SSID) and applies a point modifier.  This
-// replaces hardcoded subsumption logic and adds compound bonuses.
-
-struct WiFiScoringRule {
-    uint16_t requiredFlags;      // detector flags that must all be set
-    bool     requiresHiddenSsid; // true = rule only applies when ssid[0]=='\0'
-    int8_t   modifier;           // points to add (positive) or subtract (negative)
-};
-
-static const WiFiScoringRule wifiScoringRules[] = {
-    // Hidden SSID + known OUI: device hiding its identity is suspicious
-    { DET_MAC_OUI, true, +50 },
-    // SSID format already covers keyword -- remove double-count
-    { DET_SSID_FORMAT | DET_SSID_KEYWORD, false, -45 },
-};
-static const uint8_t WIFI_SCORING_RULE_COUNT =
-    sizeof(wifiScoringRules) / sizeof(wifiScoringRules[0]);
 
 // ============================================================
 // Bit position helper
@@ -182,24 +189,19 @@ public:
             }
         }
 
-        // Apply post-detector scoring rules
-        bool hiddenSsid = (frame.ssid[0] == '\0');
-        for (uint8_t r = 0; r < WIFI_SCORING_RULE_COUNT; r++) {
-            const WiFiScoringRule& rule = wifiScoringRules[r];
-            if ((matchFlags & rule.requiredFlags) != rule.requiredFlags) continue;
-            if (rule.requiresHiddenSsid && !hiddenSsid) continue;
-            totalWeight += rule.modifier;
-        }
-
         if (matchFlags == DET_NONE) return;
+
+        bool hiddenSsid = (frame.ssid[0] == '\0');
 
         int8_t rssiMod = rssiModifier(frame.rssi);
         totalWeight += rssiMod;
         uint8_t certainty = (uint8_t)constrain(totalWeight, 0, 100);
 
+        AlertLevel level = computeWiFiAlertLevel(matchFlags, hiddenSsid);
+
         uint32_t nowMs = millis();
         DeviceState prevState = tracker.recordDetection(
-            frame.mac, nowMs, certainty);
+            frame.mac, nowMs, level);
 
         ThreatEvent threat;
         memset(&threat, 0, sizeof(threat));
@@ -214,8 +216,10 @@ public:
         threat.matchFlags      = matchFlags | DET_RSSI_MODIFIER;
         memcpy(threat.detectorWeights, weights, sizeof(weights));
         threat.rssiModifier    = rssiMod;
-        threat.shouldAlert     = (certainty >= ALERT_THRESHOLD &&
-                                  prevState == DeviceState::EMPTY);
+        threat.alertLevel      = level;
+        threat.firstDetection  = (prevState == DeviceState::EMPTY);
+        threat.shouldAlert     = (level >= ALERT_CONFIRMED &&
+                                  threat.firstDetection);
 
         EventBus::publishThreat(threat);
     }
@@ -242,9 +246,11 @@ public:
         totalWeight += rssiMod;
         uint8_t certainty = (uint8_t)constrain(totalWeight, 0, 100);
 
+        AlertLevel level = computeBLEAlertLevel(matchFlags);
+
         uint32_t nowMs = millis();
         DeviceState prevState = tracker.recordDetection(
-            device.mac, nowMs, certainty);
+            device.mac, nowMs, level);
 
         const char* cat =
             (matchFlags & (DET_RAVEN_CUSTOM_UUID | DET_RAVEN_STD_UUID))
@@ -264,8 +270,10 @@ public:
         threat.matchFlags      = matchFlags | DET_RSSI_MODIFIER;
         memcpy(threat.detectorWeights, weights, sizeof(weights));
         threat.rssiModifier    = rssiMod;
-        threat.shouldAlert     = (certainty >= ALERT_THRESHOLD &&
-                                  prevState == DeviceState::EMPTY);
+        threat.alertLevel      = level;
+        threat.firstDetection  = (prevState == DeviceState::EMPTY);
+        threat.shouldAlert     = (level >= ALERT_CONFIRMED &&
+                                  threat.firstDetection);
 
         EventBus::publishThreat(threat);
     }
