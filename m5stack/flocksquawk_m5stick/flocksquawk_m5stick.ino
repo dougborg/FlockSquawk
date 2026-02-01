@@ -82,6 +82,7 @@ namespace {
     uint8_t displayDeviceCount = 0;
     uint8_t scrollOffset = 0;
     LGFX_Sprite* listSprite = nullptr;
+    LGFX_Sprite* headerSprite = nullptr;
     bool spriteCreated = false;
 
     bool alertActive = false;
@@ -269,30 +270,32 @@ namespace {
     }
 
     void drawDeviceListHeader(uint8_t dots, uint8_t battery, uint8_t activeCount) {
-        M5.Display.setTextSize(2);
-        int16_t width = M5.Display.width();
+        if (!spriteCreated) return;
 
-        M5.Display.fillRect(0, 0, width, LIST_HEADER_H, TFT_BLACK);
+        headerSprite->fillSprite(TFT_BLACK);
+        headerSprite->setTextSize(2);
 
         // Left: "Scan..." with animated dots
         char scanText[12];
         char dotStr[4] = "...";
         dotStr[dots] = '\0';
         snprintf(scanText, sizeof(scanText), "Scan%s", dotStr);
-        M5.Display.setCursor(0, 0);
-        M5.Display.setTextColor(STATUS_TEXT_COLOR, TFT_BLACK);
-        M5.Display.print(scanText);
+        headerSprite->setCursor(0, 0);
+        headerSprite->setTextColor(STATUS_TEXT_COLOR, TFT_BLACK);
+        headerSprite->print(scanText);
 
         // Right: "B:85% D:3"
         char rightText[16];
         snprintf(rightText, sizeof(rightText), "B:%u%% D:%u", battery, activeCount);
-        int16_t textWidth = M5.Display.textWidth(rightText);
-        M5.Display.setCursor(width - textWidth, 0);
-        M5.Display.setTextColor(batteryColor(battery), TFT_BLACK);
-        M5.Display.print(rightText);
+        int16_t textWidth = headerSprite->textWidth(rightText);
+        headerSprite->setCursor(240 - textWidth, 0);
+        headerSprite->setTextColor(batteryColor(battery), TFT_BLACK);
+        headerSprite->print(rightText);
 
-        // Separator line
-        M5.Display.drawFastHLine(0, LIST_SEPARATOR_Y, width, TFT_DARKGREY);
+        // Separator line at bottom of header sprite
+        headerSprite->drawFastHLine(0, LIST_SEPARATOR_Y, 240, TFT_DARKGREY);
+
+        headerSprite->pushSprite(0, 0);
     }
 
     void drawDeviceList(uint32_t nowMs) {
@@ -373,6 +376,9 @@ namespace {
         M5.Display.setTextSize(2);
 
         if (!spriteCreated) {
+            headerSprite = new LGFX_Sprite(&M5.Display);
+            headerSprite->setColorDepth(16);
+            headerSprite->createSprite(240, LIST_TOP_Y);
             listSprite = new LGFX_Sprite(&M5.Display);
             listSprite->setColorDepth(16);
             listSprite->createSprite(240, LIST_AREA_H);
@@ -773,9 +779,7 @@ void loop() {
         threatEngine.analyzeBluetoothDevice(bleCopy);
     }
 
-    if (threatEngine.tick(now)) {
-        M5.Speaker.tone(1800, 40);
-    }
+    threatEngine.tick(now);
 
     if (threatPending) {
         ThreatEvent threatCopy;
