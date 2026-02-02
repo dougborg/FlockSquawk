@@ -291,7 +291,13 @@ namespace {
         }
     }
 
-    void drawDeviceListHeader(uint8_t dots, uint8_t battery, uint8_t activeCount) {
+    const uint16_t INDICATOR_DIM = 0x2104; // dark grey for inactive indicators
+    const uint8_t USB_STATE_NONE = 0;
+    const uint8_t USB_STATE_CHARGING = 1;
+    const uint8_t USB_STATE_SERIAL_ACTIVE = 2;
+
+    void drawDeviceListHeader(uint8_t dots, uint8_t battery, uint8_t activeCount,
+                              bool bleConnected, uint8_t usbState) {
         if (!spriteCreated) return;
 
         headerSprite->fillSprite(TFT_BLACK);
@@ -306,13 +312,50 @@ namespace {
         headerSprite->setTextColor(STATUS_TEXT_COLOR, TFT_BLACK);
         headerSprite->print(scanText);
 
-        // Right: "B:85% D:3"
-        char rightText[16];
-        snprintf(rightText, sizeof(rightText), "B:%u%% D:%u", battery, activeCount);
-        int16_t textWidth = headerSprite->textWidth(rightText);
-        headerSprite->setCursor(240 - textWidth, 0);
+        // Right side, drawn right-to-left:
+        //   "BT U  80% 5d"
+        int16_t x = 240;
+
+        // Device count with "d" suffix
+        char countText[6];
+        snprintf(countText, sizeof(countText), "%ud", activeCount);
+        x -= headerSprite->textWidth(countText);
+        headerSprite->setCursor(x, 0);
+        headerSprite->setTextColor(STATUS_TEXT_COLOR, TFT_BLACK);
+        headerSprite->print(countText);
+
+        // Gap
+        x -= 6;
+
+        // Battery percentage (color-coded)
+        char battText[6];
+        snprintf(battText, sizeof(battText), "%u%%", battery);
+        x -= headerSprite->textWidth(battText);
+        headerSprite->setCursor(x, 0);
         headerSprite->setTextColor(batteryColor(battery), TFT_BLACK);
-        headerSprite->print(rightText);
+        headerSprite->print(battText);
+
+        // Gap
+        x -= 8;
+
+        // USB indicator "U" — green (serial active), yellow (charging), grey (none)
+        uint16_t usbColor = (usbState == USB_STATE_SERIAL_ACTIVE) ? TFT_GREEN
+                           : (usbState == USB_STATE_CHARGING)      ? TFT_YELLOW
+                           : INDICATOR_DIM;
+        x -= headerSprite->textWidth("U");
+        headerSprite->setCursor(x, 0);
+        headerSprite->setTextColor(usbColor, TFT_BLACK);
+        headerSprite->print("U");
+
+        // Gap
+        x -= 4;
+
+        // BLE indicator "BT" — cyan when connected, dark grey when not
+        uint16_t btColor = bleConnected ? TFT_CYAN : INDICATOR_DIM;
+        x -= headerSprite->textWidth("BT");
+        headerSprite->setCursor(x, 0);
+        headerSprite->setTextColor(btColor, TFT_BLACK);
+        headerSprite->print("BT");
 
         // Separator line at bottom of header sprite
         headerSprite->drawFastHLine(0, LIST_SEPARATOR_Y, 240, TFT_DARKGREY);
@@ -391,7 +434,7 @@ namespace {
         listSprite->pushSprite(0, LIST_TOP_Y);
     }
 
-    void initScanningUi(uint32_t nowMs) {
+    void initScanningUi(uint32_t nowMs, bool bleConn = false, uint8_t usbSt = 0) {
         setDisplayOn();
         M5.Display.clear(TFT_BLACK);
         M5.Display.setTextColor(STATUS_TEXT_COLOR, TFT_BLACK);
@@ -407,7 +450,7 @@ namespace {
             spriteCreated = true;
         }
 
-        drawDeviceListHeader(1, batteryFilter.smoothed, countActiveDevices());
+        drawDeviceListHeader(1, batteryFilter.smoothed, countActiveDevices(), bleConn, usbSt);
         drawDeviceList(nowMs);
         displayState = DisplayState::Awake;
         displayStateMs = nowMs;
@@ -769,7 +812,7 @@ void setup() {
     
     Serial.println("System operational - scanning for targets");
     Serial.println();
-
+    
     // Seed battery smoothing buffer
     batteryFilter.seed(M5.Power.getBatteryLevel());
 
@@ -794,6 +837,13 @@ void loop() {
     // Update smoothed battery reading (gated by BATTERY_UPDATE_MS internally)
     updateBattery(now);
 
+    // Drain incoming serial data (heartbeat pings from app)
+    static uint32_t lastSerialRxMs = 0;
+    while (Serial.available()) {
+        Serial.read();
+        lastSerialRxMs = now;
+    }
+
     // Check external power periodically and adjust scan/display modes
     if (now - lastPowerCheckMs >= BATTERY_UPDATE_MS) {
         bool onExternalPower = M5.Power.isCharging();
@@ -803,6 +853,13 @@ void loop() {
         }
         lastPowerCheckMs = now;
     }
+
+    // Connection indicators for header
+    bool usbSerialAlive = lastOnExternalPower && lastSerialRxMs > 0 && (now - lastSerialRxMs < 5000);
+    uint8_t usbState = usbSerialAlive       ? USB_STATE_SERIAL_ACTIVE
+                     : lastOnExternalPower ? USB_STATE_CHARGING
+                     :                       USB_STATE_NONE;
+    bool bleConn = bleTransport.isClientConnected();
 
     bool shouldPowerSave = lastOnExternalPower ? false : powerSaverEnabled;
 
@@ -841,7 +898,7 @@ void loop() {
         }
         // Immediate list refresh on new detection (if display is awake and not alerting)
         if (!alertActive && !statusMessageActive && displayState == DisplayState::Awake) {
-            drawDeviceListHeader(dots, batteryFilter.smoothed, countActiveDevices());
+            drawDeviceListHeader(dots, batteryFilter.smoothed, countActiveDevices(), bleConn, usbState);
             drawDeviceList(now);
         }
     }
@@ -875,7 +932,7 @@ void loop() {
     }
 
     if (M5.BtnA.wasPressed() && shouldPowerSave) {
-        initScanningUi(now);
+        initScanningUi(now, bleConn, usbState);
         lastDotMs = now;
         lastListRefreshMs = now;
     }
@@ -890,7 +947,7 @@ void loop() {
             setDisplayOff();
             displayState = DisplayState::Off;
         } else {
-            initScanningUi(now);
+            initScanningUi(now, bleConn, usbState);
             lastDotMs = now;
             lastListRefreshMs = now;
         }
@@ -899,12 +956,12 @@ void loop() {
 
     if (statusMessageActive && now >= statusMessageUntilMs) {
         statusMessageActive = false;
-        initScanningUi(now);
+        initScanningUi(now, bleConn, usbState);
     }
 
     if (!isAlerting && !statusMessageActive && shouldPowerSave != lastShouldPowerSave) {
         lastShouldPowerSave = shouldPowerSave;
-        initScanningUi(now);
+        initScanningUi(now, bleConn, usbState);
     }
 
     if (!isAlerting && !statusMessageActive) {
@@ -916,14 +973,14 @@ void loop() {
                 displayState = DisplayState::Off;
             }
         } else if (displayState != DisplayState::Awake) {
-            initScanningUi(now);
+            initScanningUi(now, bleConn, usbState);
         }
     }
 
     // Header updates (dots animation + battery/count)
     if (!isAlerting && !statusMessageActive && displayState == DisplayState::Awake && now - lastDotMs >= DOT_UPDATE_MS) {
         dots = (dots % MAX_DOTS) + 1;
-        drawDeviceListHeader(dots, batteryFilter.smoothed, countActiveDevices());
+        drawDeviceListHeader(dots, batteryFilter.smoothed, countActiveDevices(), bleConn, usbState);
         lastDotMs = now;
     }
 
@@ -931,7 +988,7 @@ void loop() {
     if (!isAlerting && !statusMessageActive && now - lastListRefreshMs >= LIST_REFRESH_MS) {
         ageDisplayDevices(now);
         if (displayState == DisplayState::Awake) {
-            drawDeviceListHeader(dots, batteryFilter.smoothed, countActiveDevices());
+            drawDeviceListHeader(dots, batteryFilter.smoothed, countActiveDevices(), bleConn, usbState);
             drawDeviceList(now);
         }
         lastListRefreshMs = now;
