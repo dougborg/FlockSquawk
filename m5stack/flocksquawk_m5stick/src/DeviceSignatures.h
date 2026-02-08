@@ -5,7 +5,7 @@
 
 namespace DeviceProfiles {
 
-    // MAC address OUI prefixes for target devices (Lite-On Technology)
+    // MAC address OUI prefixes for target devices (Silicon Laboratories)
     const char* const MACPrefixes[] = {
         "58:8e:81", "cc:cc:cc", "ec:1b:bd", "90:35:ea", "04:0d:84",
         "f0:82:c0", "1c:34:f1", "38:5b:44", "94:34:69", "b4:e3:f9",
